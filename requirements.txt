@@ -1,3 +1,5 @@
 paddleocr
 opencv-python
 numpy
+ultralytics
+huggingface_hub
