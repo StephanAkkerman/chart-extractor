@@ -1,3 +1,6 @@
+# chart_extractor.py
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,12 +15,13 @@ from ultralytics import YOLO
 CLS_SYMBOL_TITLE = 0
 CLS_LAST_PRICE_PILL = 1
 
-# HF model repo (change if you version differently)
-HF_MODEL_REPO = "StephanAkkerman/chart-info-detector-yolo12n"
+# Hugging Face model (adjust if you renamed the repo or path)
+HF_MODEL_REPO = "StephanAkkerman/chart-info-detector"
 HF_MODEL_FILE = "weights/best.pt"  # path inside the model repo
 
-# OCR model name (PaddleOCR)
-_OCR = None  # lazy global to avoid heavy init on import
+# OCR engine (lazy-loaded): RapidOCR preferred, Tesseract fallback
+_OCR = None
+_OCR_KIND = None  # "rapid" | "tesseract"
 
 
 # ---------- Types ----------
@@ -30,6 +34,8 @@ class DetBox:
 
 @dataclass
 class ExtractResult:
+    """Structured output of the chart analyzer."""
+
     symbol: str | None
     exchange: str | None
     timeframe: str | None
@@ -45,22 +51,39 @@ class ExtractResult:
 def _download_weights_if_needed(
     repo_id: str = HF_MODEL_REPO, filename: str = HF_MODEL_FILE
 ) -> str:
-    """Download YOLO weights from Hugging Face if not cached, return local path."""
+    """Download YOLO weights from Hugging Face if not cached; return local path."""
     return hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
 
 
 def _ensure_ocr():
-    global _OCR
-    if _OCR is None:
-        # Lazy import to keep import-time light
-        from paddleocr import PaddleOCR
+    """Prefer RapidOCR; fallback to Tesseract if RapidOCR isn't available."""
+    global _OCR, _OCR_KIND
+    if _OCR is not None:
+        return _OCR
+    try:
+        from rapidocr_onnxruntime import RapidOCR
 
-        # Use English by default; add 'lang="en"' to reduce alphabet
-        _OCR = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-    return _OCR
+        _OCR = RapidOCR()
+        _OCR_KIND = "rapid"
+        return _OCR
+    except Exception:
+        try:
+            import pytesseract  # requires system tesseract (Windows installer / apt-get on Linux)
+
+            _OCR = pytesseract
+            _OCR_KIND = "tesseract"
+            return _OCR
+        except Exception as e2:
+            raise RuntimeError(
+                "No OCR engine available. Install one of:\n"
+                "  pip install rapidocr-onnxruntime onnxruntime\n"
+                "or\n"
+                "  sudo apt-get install tesseract-ocr && pip install pytesseract"
+            ) from e2
 
 
 def _read_image(img: str | Path | np.ndarray) -> np.ndarray:
+    """Read image into BGR np.ndarray."""
     if isinstance(img, np.ndarray):
         return img
     p = Path(img)
@@ -73,6 +96,7 @@ def _read_image(img: str | Path | np.ndarray) -> np.ndarray:
 
 
 def _crop(im: np.ndarray, xyxy: tuple[int, int, int, int]) -> np.ndarray:
+    """Safe crop by xyxy (clamped to image)."""
     x1, y1, x2, y2 = xyxy
     h, w = im.shape[:2]
     x1 = max(0, min(x1, w - 1))
@@ -82,19 +106,31 @@ def _crop(im: np.ndarray, xyxy: tuple[int, int, int, int]) -> np.ndarray:
     return im[y1:y2, x1:x2]
 
 
+def _prep_pill(im_bgr: np.ndarray) -> np.ndarray:
+    """Boost OCR on small price pills: grayscale -> upscale -> binarize."""
+    g = cv2.cvtColor(im_bgr, cv2.COLOR_BGR2GRAY)
+    g = cv2.resize(g, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    g = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+
+
 def _ocr_text(im_bgr: np.ndarray) -> str:
-    """Run PaddleOCR and return a single concatenated string (highest-conf first)."""
+    """Run OCR (RapidOCR or Tesseract) and return a single concatenated string."""
     if im_bgr.size == 0:
         return ""
     ocr = _ensure_ocr()
-    # Convert to RGB for better OCR contrast
     im_rgb = cv2.cvtColor(im_bgr, cv2.COLOR_BGR2RGB)
-    res = ocr.ocr(im_rgb, cls=True)
-    if not res or not res[0]:
-        return ""
-    # Sort by confidence desc, join
-    lines = sorted(res[0], key=lambda x: x[1][1], reverse=True)
-    return " ".join([x[1][0] for x in lines]).strip()
+
+    if _OCR_KIND == "rapid":
+        result, _ = ocr(im_rgb)  # list of [box, text, score]
+        if not result:
+            return ""
+        result.sort(key=lambda x: x[2], reverse=True)
+        return " ".join([t[1] for t in result]).strip()
+
+    # Tesseract path
+    text = ocr.image_to_string(im_rgb, config="--psm 6")
+    return text.strip()
 
 
 # ---------- Parsing ----------
@@ -103,30 +139,23 @@ _EXCHANGE_HINTS = re.compile(
     r"\b(NYSE|NASDAQ|CBOE|ARCA|TSX|LSE|FWB|XETRA|CME|CBOT|HKEX)\b", re.I
 )
 _TIMEFRAME_RE = re.compile(r"\b(1m|3m|5m|15m|30m|45m|1h|2h|4h|D|1D|W|1W|M|1M)\b", re.I)
-# Price: 1,234.56 or 1234.56; optional currency prefix/suffix
 _PRICE_RE = re.compile(
     r"(?<![A-Za-z])(?:\$|€|£)?\s*([0-9]{1,3}(?:[, ]?[0-9]{3})*(?:\.[0-9]+)?|[0-9]+(?:\.[0-9]+)?)\s*(?:USD|EUR|GBP)?(?![A-Za-z])"
 )
 
 
 def _parse_title(text: str) -> tuple[str | None, str | None, str | None]:
-    """
-    Parse ticker, exchange, timeframe from title text.
-    Heuristic: first strong ticker-like token is the symbol.
-    """
+    """Parse (symbol, exchange, timeframe) from title text."""
     if not text:
         return None, None, None
-    # timeframe is often separate; pick it but don't let it be the symbol
     timeframe = None
     tfm = _TIMEFRAME_RE.search(text)
     if tfm:
         timeframe = tfm.group(1).upper()
 
-    # pick first ticker-looking token
     sym = None
     for m in _TICKER_RE.finditer(text):
         token = m.group(1)
-        # filter out pure numbers
         if not token.isdigit():
             sym = token
             break
@@ -135,15 +164,11 @@ def _parse_title(text: str) -> tuple[str | None, str | None, str | None]:
     em = _EXCHANGE_HINTS.search(text)
     if em:
         exch = em.group(1).upper()
-
     return sym, exch, timeframe
 
 
 def _parse_pill(text: str) -> tuple[float | None, str | None]:
-    """
-    Parse price and session hint from pill.
-    Detect 'Pre'/'Post' tokens as session markers.
-    """
+    """Parse (price, session) from pill text; session ∈ {regular, pre, post}."""
     if not text:
         return None, None
     sess = None
@@ -151,10 +176,9 @@ def _parse_pill(text: str) -> tuple[float | None, str | None]:
         sess = "post"
     elif re.search(r"\bpre\b", text, re.I):
         sess = "pre"
-    # take the first plausible price
+
     m = _PRICE_RE.search(text.replace(",", ""))
     if not m:
-        # allow comma thousand sep as fallback
         m = _PRICE_RE.search(text)
     price = None
     if m:
@@ -168,7 +192,7 @@ def _parse_pill(text: str) -> tuple[float | None, str | None]:
 # ---------- Core pipeline ----------
 class ChartExtractor:
     """
-    Detects chart widgets and extracts structured info via OCR.
+    Detects chart widgets (YOLO) and extracts info via OCR.
 
     Parameters
     ----------
@@ -177,7 +201,7 @@ class ChartExtractor:
     imgsz : int
         Inference size for detection.
     conf : float
-        Confidence threshold.
+        Detection confidence threshold.
     iou : float
         IoU threshold for NMS.
     """
@@ -197,6 +221,7 @@ class ChartExtractor:
         self.iou = iou
 
     def _detect(self, img: np.ndarray) -> list[DetBox]:
+        """Run YOLO and return list of DetBox."""
         res = self.model.predict(
             source=img, imgsz=self.imgsz, conf=self.conf, iou=self.iou, verbose=False
         )[0]
@@ -210,10 +235,10 @@ class ChartExtractor:
 
     @staticmethod
     def _pick_best_per_class(boxes: list[DetBox]) -> dict[int, DetBox]:
+        """Choose best box per class; for pills prefer rightmost on equal conf."""
         picks: dict[int, DetBox] = {}
         for b in sorted(boxes, key=lambda z: z.conf, reverse=True):
             if b.cls == CLS_LAST_PRICE_PILL:
-                # special rule: prefer the rightmost pill if confidences tie
                 prev = picks.get(CLS_LAST_PRICE_PILL)
                 if (
                     prev is None
@@ -237,7 +262,7 @@ class ChartExtractor:
         Returns
         -------
         ExtractResult
-            Structured extraction with raw OCR text for debugging.
+            Structured extraction with raw OCR text and detected boxes.
         """
         im = _read_image(image)
         boxes = self._detect(im)
@@ -245,7 +270,7 @@ class ChartExtractor:
 
         # Title OCR (detected box or fallback to top band)
         raw_title = ""
-        title_box = None
+        title_box: tuple[int, int, int, int] | None = None
         if CLS_SYMBOL_TITLE in picks:
             title_box = picks[CLS_SYMBOL_TITLE].xyxy
             raw_title = _ocr_text(_crop(im, title_box))
@@ -256,10 +281,11 @@ class ChartExtractor:
 
         # Price OCR (if any pill detected)
         raw_pill = ""
-        pill_box = None
+        pill_box: tuple[int, int, int, int] | None = None
         if CLS_LAST_PRICE_PILL in picks:
             pill_box = picks[CLS_LAST_PRICE_PILL].xyxy
-            raw_pill = _ocr_text(_crop(im, pill_box))
+            pill_crop = _crop(im, pill_box)
+            raw_pill = _ocr_text(_prep_pill(pill_crop))
 
         # Parse
         symbol, exchange, timeframe = _parse_title(raw_title)
@@ -276,3 +302,30 @@ class ChartExtractor:
             det_title_box=title_box,
             det_pill_box=pill_box,
         )
+
+
+# ---------- Quick CLI test ----------
+if __name__ == "__main__":
+    import json
+    import sys
+
+    img_path = sys.argv[1] if len(sys.argv) > 1 else "img/chart.png"
+    ce = ChartExtractor(imgsz=1536, conf=0.25, iou=0.5)
+    out = ce.analyze(img_path)
+    print(
+        json.dumps(
+            {
+                "symbol": out.symbol,
+                "exchange": out.exchange,
+                "timeframe": out.timeframe,
+                "price": out.price,
+                "session": out.session,
+                "raw_title_text": out.raw_title_text,
+                "raw_pill_text": out.raw_pill_text,
+                "det_title_box": out.det_title_box,
+                "det_pill_box": out.det_pill_box,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )

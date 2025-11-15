@@ -1,4 +1,5 @@
-paddleocr
+rapidocr-onnxruntime
+onnxruntime
 opencv-python
 numpy
 ultralytics
