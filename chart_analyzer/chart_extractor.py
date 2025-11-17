@@ -55,6 +55,37 @@ def _download_weights_if_needed(
     return hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
 
 
+# --- NEW helpers: classify OCR text, smart swap ---
+def _looks_like_price(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    # Prefer decimals for price; allow pure digits if long enough
+    has_decimal = bool(re.search(r"\d+\.\d+", t))
+    has_digits = bool(re.search(r"\d", t))
+    # Avoid S&P 500 false hit
+    if "S&P" in t and re.search(r"\b500\b", t):
+        return False
+    return has_decimal or (has_digits and len(re.sub(r"\D", "", t)) >= 2)
+
+
+def _looks_like_title(text: str) -> bool:
+    if not text:
+        return False
+    # letters, separators, multiple words – typical title
+    return bool(re.search(r"[A-Za-z]", text)) and len(text.split()) >= 2
+
+
+def _maybe_swap(
+    title_text: str, pill_text: str, title_box, pill_box
+) -> tuple[str, str, tuple | None, tuple | None]:
+    """If OCR suggests the two crops are swapped, swap them."""
+    if _looks_like_price(title_text) and _looks_like_title(pill_text):
+        # swap
+        return pill_text, title_text, pill_box, title_box
+    return title_text, pill_text, title_box, pill_box
+
+
 def _ensure_ocr():
     """Prefer RapidOCR; fallback to Tesseract if RapidOCR isn't available."""
     global _OCR, _OCR_KIND
@@ -144,46 +175,84 @@ _PRICE_RE = re.compile(
 )
 
 
+# --- REPLACE your title parser with this TradingView-oriented version ---
 def _parse_title(text: str) -> tuple[str | None, str | None, str | None]:
-    """Parse (symbol, exchange, timeframe) from title text."""
+    """
+    Parse (name, exchange, timeframe) from TradingView-style titles like:
+    'SPDR S&P 500 ETF Trust · 1D · NYSE Arca'
+    Falls back to a ticker-like token if separators absent.
+    """
     if not text:
         return None, None, None
+
+    # Split on common separators
+    tokens = [t.strip() for t in re.split(r"[·|•\-–—]+", text) if t.strip()]
+    name = None
+    exchange = None
     timeframe = None
-    tfm = _TIMEFRAME_RE.search(text)
-    if tfm:
-        timeframe = tfm.group(1).upper()
 
-    sym = None
-    for m in _TICKER_RE.finditer(text):
-        token = m.group(1)
-        if not token.isdigit():
-            sym = token
-            break
+    # classify tokens
+    for tok in tokens:
+        if timeframe is None and _TIMEFRAME_RE.fullmatch(tok.upper()):
+            timeframe = tok.upper()
+            continue
+        if exchange is None and _EXCHANGE_HINTS.search(tok):
+            # normalize common venue variants
+            m = _EXCHANGE_HINTS.search(tok)
+            exchange = m.group(1).upper()
+            continue
 
-    exch = None
-    em = _EXCHANGE_HINTS.search(text)
-    if em:
-        exch = em.group(1).upper()
-    return sym, exch, timeframe
+    # Name = remaining tokens joined (prefer the first token)
+    rest = [
+        t
+        for t in tokens
+        if t not in (timeframe, exchange) and not _TIMEFRAME_RE.fullmatch(t.upper())
+    ]
+    if rest:
+        # remove stray colons/numbers like times
+        name = re.sub(r"\s*:\s*\d+$", "", rest[0]).strip()
+
+    # Fallback: if no separators, return first ticker-like token as name
+    if not name:
+        for m in _TICKER_RE.finditer(text):
+            token = m.group(1)
+            if not token.isdigit():
+                name = token
+                break
+
+    return name, exchange, timeframe
 
 
+# --- TIGHTER price parser (only from pill text) ---
 def _parse_pill(text: str) -> tuple[float | None, str | None]:
-    """Parse (price, session) from pill text; session ∈ {regular, pre, post}."""
+    """
+    Parse (price, session) from pill text; avoid 'S&P 500' false matches.
+    Prefers decimals; if multiple numbers, pick the highest-conf looking one.
+    """
     if not text:
         return None, None
+
     sess = None
     if re.search(r"\bpost\b", text, re.I):
         sess = "post"
     elif re.search(r"\bpre\b", text, re.I):
         sess = "pre"
 
-    m = _PRICE_RE.search(text.replace(",", ""))
+    # strip thousand separators, keep decimals
+    t = text.replace(" ", "")
+    if "S&P" in t:
+        t = re.sub(r"\b500\b", "", t)  # drop S&P 500 literal
+
+    # prefer decimals
+    m = re.search(r"([0-9]+(?:\.[0-9]+))", t)
     if not m:
-        m = _PRICE_RE.search(text)
+        # fallback: any integer
+        m = re.search(r"\b([0-9]{2,})\b", t)
+
     price = None
     if m:
         try:
-            price = float(m.group(1).replace(",", "").replace(" ", ""))
+            price = float(m.group(1).replace(",", ""))
         except Exception:
             price = None
     return price, ("regular" if sess is None else sess)
@@ -250,7 +319,14 @@ class ChartExtractor:
                 picks.setdefault(b.cls, b)
         return picks
 
-    def analyze(self, image: str | Path | np.ndarray) -> ExtractResult:
+    def analyze(
+        self,
+        image: str | Path | np.ndarray,
+        *,
+        debug_show: bool = False,
+        debug_save: str | Path | None = None,
+        return_annotated: bool = False,
+    ) -> ExtractResult | tuple[ExtractResult, np.ndarray]:
         """
         Run detection → OCR → parsing on a chart screenshot.
 
@@ -258,19 +334,49 @@ class ChartExtractor:
         ----------
         image : str | Path | np.ndarray
             Input image path or loaded BGR array.
-
-        Returns
-        -------
-        ExtractResult
-            Structured extraction with raw OCR text and detected boxes.
+        debug_show : bool
+            If True, display a window with detections (cv2.imshow).
+        debug_save : str | Path | None
+            If set, save an annotated image to this path.
+        return_annotated : bool
+            If True, return (ExtractResult, annotated_bgr) instead of just ExtractResult.
         """
         im = _read_image(image)
-        boxes = self._detect(im)
+
+        # -- Run detector and keep the raw Results for plotting
+        results = self.model.predict(
+            source=im, imgsz=self.imgsz, conf=self.conf, iou=self.iou, verbose=False
+        )
+        res0 = results[0]  # ultralytics.engine.results.Results
+
+        # -- Optional visualization (Ultralytics renders all detections)
+        annotated_bgr = None
+        if debug_show or debug_save or return_annotated:
+            annotated_bgr = res0.plot()  # returns BGR np.ndarray with boxes & labels
+
+        if debug_show:
+            cv2.imshow("chart-analyzer: detections", annotated_bgr)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+        if debug_save:
+            out_path = Path(debug_save)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(out_path), annotated_bgr)
+
+        # -- Convert boxes to our DetBox list
+        boxes: list[DetBox] = []
+        for b in res0.boxes:
+            cls_id = int(b.cls.item())
+            conf = float(b.conf.item())
+            x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+            boxes.append(DetBox(cls=cls_id, conf=conf, xyxy=(x1, y1, x2, y2)))
+
         picks = self._pick_best_per_class(boxes)
 
         # Title OCR (detected box or fallback to top band)
         raw_title = ""
-        title_box: tuple[int, int, int, int] | None = None
+        title_box = None
         if CLS_SYMBOL_TITLE in picks:
             title_box = picks[CLS_SYMBOL_TITLE].xyxy
             raw_title = _ocr_text(_crop(im, title_box))
@@ -281,17 +387,22 @@ class ChartExtractor:
 
         # Price OCR (if any pill detected)
         raw_pill = ""
-        pill_box: tuple[int, int, int, int] | None = None
+        pill_box = None
         if CLS_LAST_PRICE_PILL in picks:
             pill_box = picks[CLS_LAST_PRICE_PILL].xyxy
             pill_crop = _crop(im, pill_box)
             raw_pill = _ocr_text(_prep_pill(pill_crop))
 
+        # --- NEW: fix class swap if OCR suggests it ---
+        raw_title, raw_pill, title_box, pill_box = _maybe_swap(
+            raw_title, raw_pill, title_box, pill_box
+        )
+
         # Parse
         symbol, exchange, timeframe = _parse_title(raw_title)
         price, session = _parse_pill(raw_pill)
 
-        return ExtractResult(
+        result = ExtractResult(
             symbol=symbol,
             exchange=exchange,
             timeframe=timeframe,
@@ -302,6 +413,10 @@ class ChartExtractor:
             det_title_box=title_box,
             det_pill_box=pill_box,
         )
+
+        if return_annotated:
+            return result, annotated_bgr
+        return result
 
 
 # ---------- Quick CLI test ----------
