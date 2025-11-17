@@ -1,31 +1,39 @@
-# Template
+# Chart Extractor 📈⛏️
 
 <!-- Add a banner here like: https://github.com/StephanAkkerman/fintwit-bot/blob/main/img/logo/fintwit-banner.png -->
 
 ---
 <!-- Adjust the link of the first and second badges to your own repo -->
 <p align="center">
-  <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/StephanAkkerman/template/pyversions.yml?label=python%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13&logo=python&style=flat-square">
-  <img src="https://img.shields.io/github/license/StephanAkkerman/template.svg?color=brightgreen" alt="License">
+  <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/StephanAkkerman/chart-extractor/pyversions.yml?label=python%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13&logo=python&style=flat-square">
+  <img src="https://img.shields.io/github/license/StephanAkkerman/chart-extractor.svg?color=brightgreen" alt="License">
   <a href="https://github.com/psf/black"><img src="https://img.shields.io/badge/code%20style-black-000000.svg" alt="Code style: black"></a>
 </p>
 
 ## Introduction
 
-In this section you can provide a brief introduction to the project. You can also include a brief description of the project and its features.
+Chart-extractor provides tools for extracting important information from financial charts, utilizing my [chart-info-detector](https://github.com/StephanAkkerman/chart-info-detector) model and OCR tools.
+
+## Example
+Given an Tradingview chart image like the one below, it will extract the information such as price, symbol, exchange, and timeframe.
+
+<details closed>
+<summary>Input Image Example</summary>
+<img src="img/chart.png" alt="Input Chart">
+</details>
+
+Output:
+```
+ExtractResult(symbol='SPOR S&P 500 ETF Trust', exchange='NYSE', timeframe='1D', price=682.98, session='regular', raw_title_text='SPOR S&P 500 ETF Trust · 1D · NYSE Arca', raw_pill_text='682.98 :28', det_title_box=(13, 28, 193, 38), det_pill_box=(1139, 145, 1186, 168))
+```
 
 ## Table of Contents 🗂
 
-- [Key Features](#key-features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Citation](#citation)
 - [Contributing](#contributing)
 - [License](#license)
-
-## Key Features 🔑
-
-This section is optional. If your project has a lot of features, consider adding a list of key features here.
 
 ## Installation ⚙️
 <!-- Adjust the link of the second command to your own repo -->
@@ -39,7 +47,7 @@ pip install -r requirements.txt
 or
 
 ```bash
-pip install git+https://github.com/StephanAkkerman/template.git
+pip install git+https://github.com/StephanAkkerman/chart-extractor.git
 ```
 
 ## Usage ⌨️
@@ -49,20 +57,20 @@ pip install git+https://github.com/StephanAkkerman/template.git
 If you use this project in your research, please cite as follows:
 
 ```bibtex
-@misc{project_name,
+@misc{chart_extractor_2025,
   author  = {Stephan Akkerman},
-  title   = {Project Name},
-  year    = {2024},
+  title   = {Chart Extractor},
+  year    = {2025},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = {\url{https://github.com/StephanAkkerman/template}}
+  howpublished = {\url{https://github.com/StephanAkkerman/chart-extractor}}
 }
 ```
 
 ## Contributing 🛠
 <!-- Be sure to adjust the repo name here for both the URL and GitHub link -->
 Contributions are welcome! If you have a feature request, bug report, or proposal for code refactoring, please feel free to open an issue on GitHub. We appreciate your help in improving this project.\
-![https://github.com/StephanAkkerman/template/graphs/contributors](https://contributors-img.firebaseapp.com/image?repo=StephanAkkerman/template)
+![https://github.com/StephanAkkerman/chart-extractor/graphs/contributors](https://contributors-img.firebaseapp.com/image?repo=StephanAkkerman/template)
 
 ## License 📜
 
