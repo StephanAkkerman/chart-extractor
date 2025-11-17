@@ -367,7 +367,6 @@ class ChartExtractor:
             pill_crop = _crop(im, pill_box)
             raw_pill = _ocr_text(_prep_pill(pill_crop))
 
-        # --- NEW: fix class swap if OCR suggests it ---
         raw_title, raw_pill, title_box, pill_box = _maybe_swap(
             raw_title, raw_pill, title_box, pill_box
         )
