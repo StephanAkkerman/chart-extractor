@@ -12,13 +12,13 @@
 
 ## Introduction
 
-Chart-extractor provides tools for extracting important information from financial charts, utilizing my [chart-info-detector](https://github.com/StephanAkkerman/chart-info-detector) model and OCR tools.
+Chart-extractor provides tools for extracting important information from financial charts, utilizing the [chart-info-detector](https://github.com/StephanAkkerman/chart-info-detector) model and OCR tools. It detects the chart title and the small price "pill" in screenshots, runs OCR on those regions, and applies lightweight parsing heuristics to convert raw OCR text into structured fields such as symbol, exchange, timeframe, price, and trading session. The project is designed primarily for TradingView-style screenshots but also works with similar chart widgets. It supports RapidOCR (ONNX runtime) for fast local inference and can fall back to Tesseract when needed. Use the library programmatically, the small CLI for quick JSON output, or the example script for experiments.
 
 ## Example
 Given an Tradingview chart image like the one below, it will extract the information such as price, symbol, exchange, and timeframe.
 
 <details closed>
-<summary>Input Image Example</summary>
+<summary>Input Image Example 📊</summary>
 <img src="img/chart.png" alt="Input Chart">
 </details>
 

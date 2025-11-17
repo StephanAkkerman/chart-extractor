@@ -1,6 +1,3 @@
-# chart_extractor.py
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,18 +5,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 from huggingface_hub import hf_hub_download
+from rapidocr_onnxruntime import RapidOCR
 from ultralytics import YOLO
 
-# ---------- Config ----------
-# Class IDs (must match your training config)
 CLS_SYMBOL_TITLE = 0
 CLS_LAST_PRICE_PILL = 1
 
-# Hugging Face model (adjust if you renamed the repo or path)
 HF_MODEL_REPO = "StephanAkkerman/chart-info-detector"
-HF_MODEL_FILE = "weights/best.pt"  # path inside the model repo
+HF_MODEL_FILE = "weights/best.pt"
 
-# OCR engine (lazy-loaded): RapidOCR preferred, Tesseract fallback
 _OCR = None
 _OCR_KIND = None  # "rapid" | "tesseract"
 
@@ -55,7 +49,6 @@ def _download_weights_if_needed(
     return hf_hub_download(repo_id=repo_id, filename=filename, repo_type="model")
 
 
-# --- NEW helpers: classify OCR text, smart swap ---
 def _looks_like_price(text: str) -> bool:
     if not text:
         return False
@@ -91,26 +84,10 @@ def _ensure_ocr():
     global _OCR, _OCR_KIND
     if _OCR is not None:
         return _OCR
-    try:
-        from rapidocr_onnxruntime import RapidOCR
 
-        _OCR = RapidOCR()
-        _OCR_KIND = "rapid"
-        return _OCR
-    except Exception:
-        try:
-            import pytesseract  # requires system tesseract (Windows installer / apt-get on Linux)
-
-            _OCR = pytesseract
-            _OCR_KIND = "tesseract"
-            return _OCR
-        except Exception as e2:
-            raise RuntimeError(
-                "No OCR engine available. Install one of:\n"
-                "  pip install rapidocr-onnxruntime onnxruntime\n"
-                "or\n"
-                "  sudo apt-get install tesseract-ocr && pip install pytesseract"
-            ) from e2
+    _OCR = RapidOCR()
+    _OCR_KIND = "rapid"
+    return _OCR
 
 
 def _read_image(img: str | Path | np.ndarray) -> np.ndarray:
@@ -175,7 +152,6 @@ _PRICE_RE = re.compile(
 )
 
 
-# --- REPLACE your title parser with this TradingView-oriented version ---
 def _parse_title(text: str) -> tuple[str | None, str | None, str | None]:
     """
     Parse (name, exchange, timeframe) from TradingView-style titles like:
@@ -223,7 +199,6 @@ def _parse_title(text: str) -> tuple[str | None, str | None, str | None]:
     return name, exchange, timeframe
 
 
-# --- TIGHTER price parser (only from pill text) ---
 def _parse_pill(text: str) -> tuple[float | None, str | None]:
     """
     Parse (price, session) from pill text; avoid 'S&P 500' false matches.
@@ -258,7 +233,6 @@ def _parse_pill(text: str) -> tuple[float | None, str | None]:
     return price, ("regular" if sess is None else sess)
 
 
-# ---------- Core pipeline ----------
 class ChartExtractor:
     """
     Detects chart widgets (YOLO) and extracts info via OCR.
@@ -419,7 +393,6 @@ class ChartExtractor:
         return result
 
 
-# ---------- Quick CLI test ----------
 if __name__ == "__main__":
     import json
     import sys
