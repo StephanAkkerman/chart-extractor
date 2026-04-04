@@ -22,6 +22,16 @@ Given an Tradingview chart image like the one below, it will extract the informa
 <img src="img/chart.png" alt="Input Chart">
 </details>
 
+Python code:
+```python
+from chart_extractor import ChartExtractor
+
+extractor = ChartExtractor(weights=None, imgsz=1792, conf=0.25, iou=0.5)
+res = extractor.analyze("img/chart.png")
+
+print(res)
+```
+
 Output:
 ```
 ExtractResult(symbol='SPOR S&P 500 ETF Trust', exchange='NYSE', timeframe='1D', price=682.98, session='regular', raw_title_text='SPOR S&P 500 ETF Trust · 1D · NYSE Arca', raw_pill_text='682.98 :28', det_title_box=(13, 28, 193, 38), det_pill_box=(1139, 145, 1186, 168))
