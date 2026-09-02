@@ -1,3 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chart-extractor"
+version = "0.1.0"
+description = "Extract symbol, exchange, timeframe, price, and session from financial chart screenshots."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Stephan Akkerman" }]
+requires-python = ">=3.10"
+dependencies = [
+    "rapidocr-onnxruntime",
+    "onnxruntime",
+    "opencv-python",
+    "numpy",
+    "ultralytics",
+    "huggingface_hub",
+]
+
+[project.urls]
+Homepage = "https://github.com/StephanAkkerman/chart-extractor"
+
+[tool.hatch.build.targets.wheel]
+packages = ["chart_extractor"]
+
 [tool.isort]
 multi_line_output = 3
 include_trailing_comma = true
